@@ -1,0 +1,411 @@
+#!/bin/sh
+
+p5_fixed_default="1742618977"
+p6_fixed_default="0"
+p7_fixed_default="0"
+p8_fixed_default="26732601000067074"
+p9_fixed_default="1"
+color_fixed_decimal="16777215"
+
+c_reset='\033[0m'
+c_bold='\033[1m'
+c_red='\033[0;31m'
+c_green='\033[0;32m'
+c_yellow='\033[0;33m'
+c_blue='\033[0;34m'
+c_magenta='\033[0;35m'
+c_cyan='\033[0;36m'
+
+title_color="${c_bold}${c_cyan}"
+step_color="${c_bold}${c_blue}"
+prompt_color="${c_yellow}"
+info_color="${c_cyan}"
+success_color="${c_green}"
+warning_color="${c_yellow}"
+error_color="${c_red}"
+debug_color="${c_magenta}"
+nc="${c_reset}"
+
+xml_escape() {
+    printf "%s" "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&apos;/g'
+}
+
+printf "${title_color}=====================================${nc}\n"
+printf "${title_color}  弹幕格式转换与下载脚本 v7.1 (Termux Optimized) ${nc}\n"
+printf "${title_color}=====================================${nc}\n\n"
+
+if ! command -v jq > /dev/null; then
+    printf "${error_color}错误: 'jq' 命令未找到. 请在Termux中执行 'pkg install jq' 来安装它.${nc}\n" >&2
+    exit 1
+fi
+if ! command -v curl > /dev/null; then
+    printf "${error_color}错误: 'curl' 命令未找到. 请在Termux中执行 'pkg install curl' 来安装它.${nc}\n" >&2
+    exit 1
+fi
+
+printf "${step_color}步骤 1: 输入影视总保存文件夹路径${nc}\n"
+base_save_dir=""
+while [ -z "$base_save_dir" ]; do
+    printf "${prompt_color}请输入影视总文件夹的完整路径 (例如: /sdcard/MyShows): ${nc}"
+    read -r input_base_dir
+    input_base_dir_expanded=$(eval echo "$input_base_dir")
+    if [ -z "$input_base_dir_expanded" ]; then
+        printf "${error_color}错误: 路径不能为空.${nc}\n"
+    else
+        base_save_dir="$input_base_dir_expanded"
+    fi
+done
+
+if [ ! -d "$base_save_dir" ]; then
+    printf "${info_color}信息: 文件夹 '%s' 不存在. 是否创建它? (y/n): ${nc}" "$base_save_dir"
+    read -r create_choice
+    if [ "$create_choice" = "y" ] || [ "$create_choice" = "Y" ]; then
+        mkdir -p "$base_save_dir"
+        if [ $? -ne 0 ]; then
+            printf "${error_color}错误: 创建文件夹 '%s' 失败. 请检查权限或路径.${nc}\n" "$base_save_dir" >&2
+            exit 1
+        else
+            printf "${success_color}文件夹 '%s' 创建成功.${nc}\n" "$base_save_dir"
+        fi
+    else
+        printf "${warning_color}操作取消. 文件夹未创建. 脚本退出.${nc}\n"
+        exit 1
+    fi
+fi
+printf "${info_color}影视文件将保存在 '%s' 下的对应子文件夹中.${nc}\n\n" "$base_save_dir"
+
+history_filename="影视列表.txt"
+printf "${step_color}步骤 2: 选择或输入影视名称${nc}\n"
+show_name=""
+printf "${prompt_color}操作选项:\n"
+printf "  1) 从已有影视列表中选择 (%s)\n" "$history_filename"
+printf "  2) 输入新的影视名称\n"
+printf "请输入选项 (1 或 2): ${nc}"
+read -r name_choice
+
+if [ "$name_choice" = "1" ]; then
+    if [ ! -f "$history_filename" ] || [ ! -s "$history_filename" ]; then
+        printf "${warning_color}警告: 影视列表 (%s) 为空或不存在. 请先添加新的影视名称.${nc}\n" "$history_filename"
+        name_choice="2"
+    else
+        printf "${info_color}从列表中选择影视名称:${nc}\n"
+        awk '{printf "  %s) %s\n", NR, $0}' "$history_filename"
+        printf "${prompt_color}请输入序号: ${nc}"
+        read -r selection_num
+
+        if ! echo "$selection_num" | grep -q '^[0-9][0-9]*$'; then
+            printf "${error_color}错误: 输入的序号无效. 将引导您输入新名称.${nc}\n"
+            name_choice="2"
+        else
+            total_shows=$(grep -c . "$history_filename" 2>/dev/null || echo 0)
+            if [ "$selection_num" -ge 1 ] && [ "$selection_num" -le "$total_shows" ]; then
+                show_name=$(sed -n "${selection_num}p" "$history_filename")
+                printf "${info_color}已选择影视: %s${nc}\n" "$show_name"
+            else
+                printf "${error_color}错误: 无效的序号选择. 将引导您输入新名称.${nc}\n"
+                name_choice="2"
+            fi
+        fi
+    fi
+fi
+
+if [ "$name_choice" = "2" ]; then
+    printf "${prompt_color}请输入新的影视名称: ${nc}"
+    read -r new_show_name
+    if [ -z "$new_show_name" ]; then
+        printf "${error_color}错误: 影视名称不能为空.${nc}\n" >&2
+        exit 1
+    fi
+    show_name="$new_show_name"
+
+    is_in_history=1
+    if [ -f "$history_filename" ]; then
+        if grep -qFx "$show_name" "$history_filename"; then
+            is_in_history=0
+        fi
+    fi
+
+    if [ "$is_in_history" -ne 0 ]; then
+        if [ -f "$history_filename" ] && [ -s "$history_filename" ]; then
+             printf "\n" >> "$history_filename" 2>/dev/null || :
+        fi
+        echo "$show_name" >> "$history_filename"
+        if [ $? -eq 0 ]; then
+            printf "${info_color}信息: '%s' 已添加到影视列表 (%s).${nc}\n" "$show_name" "$history_filename"
+        else
+            printf "${error_color}错误: 无法将 '%s' 添加到影视列表 (%s).${nc}\n" "$show_name" "$history_filename" >&2
+        fi
+    fi
+fi
+
+if [ -z "$show_name" ]; then
+    printf "${error_color}错误: 未能确定影视名称. 脚本退出.${nc}\n" >&2
+    exit 1
+fi
+
+show_folder_path="${base_save_dir}/${show_name}"
+if [ ! -d "$show_folder_path" ]; then
+    printf "${info_color}信息: 文件夹 '%s' 不存在, 正在创建...${nc}\n" "$show_folder_path"
+    mkdir -p "$show_folder_path"
+    if [ $? -ne 0 ]; then
+        printf "${error_color}错误: 创建文件夹 '%s' 失败.${nc}\n" "$show_folder_path" >&2
+        exit 1
+    else
+        printf "${success_color}信息: 文件夹 '%s' 创建成功.${nc}\n" "$show_folder_path"
+    fi
+else
+    printf "${info_color}信息: 文件夹 '%s' 已存在.${nc}\n" "$show_folder_path"
+fi
+
+printf "\n${step_color}步骤 3: 输入分集信息${nc}\n"
+printf "${prompt_color}请输入集数 (例如 01, E02. 如果是电影, 请输入 0 ): ${nc}"
+read -r episode_number
+if [ -z "$episode_number" ]; then
+    printf "${error_color}错误: 集数不能为空.${nc}\n" >&2
+    exit 1
+fi
+
+output_filename_base="${show_folder_path}/${show_name}"
+if [ "$episode_number" = "0" ]; then
+    output_filename="${output_filename_base}.xml"
+    printf "${info_color}信息: 检测到电影模式.${nc}\n"
+else
+    output_filename="${output_filename_base}-${episode_number}.xml"
+fi
+printf "${info_color}信息: 输出结果将保存到文件 -> %s${nc}\n" "$output_filename"
+
+printf "\n${step_color}步骤 4: 选择弹幕源类型及路径/链接${nc}\n"
+printf "${prompt_color}请选择弹幕源的类型:\n"
+printf "  1) 本地 JSON 弹幕文件路径\n"
+printf "  2) 直接 JSON 弹幕下载链接\n"
+printf "  3) 视频网页链接 (爱奇艺 / 腾讯 / 优酷 - 将使用 dmku.hls.one)\n"
+printf "请输入选项 (1, 2, 或 3): ${nc}"
+read -r source_type_choice
+
+json_content=""
+final_danmaku_download_url=""
+
+if [ "$source_type_choice" = "1" ]; then
+    printf "${prompt_color}请输入本地 JSON 弹幕文件的完整路径: ${nc}"
+    read -r local_file_path
+    local_file_path_expanded=$(eval echo "$local_file_path")
+    if [ -z "$local_file_path_expanded" ]; then
+        printf "${error_color}错误: 文件路径不能为空.${nc}\n" >&2
+        exit 1
+    fi
+    if [ ! -f "$local_file_path_expanded" ]; then
+        printf "${error_color}错误: 文件 '%s' 未找到.${nc}\n" "$local_file_path_expanded" >&2
+        exit 1
+    fi
+    json_content=$(cat "$local_file_path_expanded")
+    if [ -z "$json_content" ]; then
+        printf "${error_color}错误: 文件 '%s' 为空.${nc}\n" "$local_file_path_expanded" >&2
+        exit 1
+    fi
+    printf "${success_color}成功读取本地文件内容.${nc}\n"
+
+elif [ "$source_type_choice" = "2" ]; then
+    printf "${prompt_color}请输入 JSON 弹幕直接下载链接: ${nc}"
+    read -r direct_json_url
+    if [ -z "$direct_json_url" ]; then
+        printf "${error_color}错误: 下载链接不能为空.${nc}\n" >&2
+        exit 1
+    fi
+    final_danmaku_download_url="$direct_json_url"
+    printf "${info_color}信息: 使用直接JSON弹幕链接.${nc}\n"
+
+elif [ "$source_type_choice" = "3" ]; then
+    printf "${prompt_color}请输入视频网页链接 (爱奇艺 / 腾讯 / 优酷): ${nc}"
+    read -r video_page_url
+    if [ -z "$video_page_url" ]; then
+        printf "${error_color}错误: 未输入视频网页链接.${nc}\n" >&2
+        exit 1
+    fi
+
+    if echo "$video_page_url" | grep -q -E "iqiyi\.com|v\.qq\.com"; then
+        printf "${info_color}信息: 检测到爱奇艺或腾讯视频链接, 正在处理...${nc}\n"
+        base_video_url="${video_page_url%%\?*}"
+        final_danmaku_download_url="https://dmku.hls.one/?ac=dm&url=${base_video_url}"
+    elif echo "$video_page_url" | grep -q "youku\.com"; then
+        printf "${info_color}信息: 检测到优酷链接, 正在处理...${nc}\n"
+        extracted_youku_id=""
+        if echo "$video_page_url" | grep -q "vid="; then
+            extracted_youku_id=$(echo "$video_page_url" | sed -n 's/.*vid=\([^&]*\).*/\1/p')
+        fi
+        if [ -z "$extracted_youku_id" ] && echo "$video_page_url" | grep -q "v_show/id_"; then
+            extracted_youku_id=$(echo "$video_page_url" | sed -n 's|.*v_show/id_\([^.]*\).*|\1|p')
+        fi
+
+        if [ -n "$extracted_youku_id" ]; then
+            youku_target_segment_for_dmku="http://v.youku.com/v_show/id_${extracted_youku_id}.html"
+            final_danmaku_download_url="https://dmku.hls.one/?ac=dm&url=${youku_target_segment_for_dmku}"
+        else
+            printf "${warning_color}警告: 无法从优酷链接中提取有效视频ID. 将尝试使用原始链接.${nc}\n" >&2
+            final_danmaku_download_url="https://dmku.hls.one/?ac=dm&url=${video_page_url}"
+        fi
+    else
+        printf "${warning_color}警告: 无法明确识别视频网站, 将尝试使用通用拼接方式 (dmku.hls.one).${nc}\n" >&2
+        final_danmaku_download_url="https://dmku.hls.one/?ac=dm&url=${video_page_url}"
+    fi
+else
+    printf "${error_color}错误: 无效的选项 '%s'.${nc}\n" "$source_type_choice" >&2
+    exit 1
+fi
+
+if [ -n "$final_danmaku_download_url" ]; then
+    printf "\n${step_color}步骤 5: 下载弹幕内容${nc}\n"
+    printf "${info_color}最终下载链接: %s${nc}\n" "$final_danmaku_download_url"
+    printf "${info_color}正在下载 (超时时间 25 秒)...${nc}\n"
+    user_agent_string="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    json_content=$(curl -sSLk -A "$user_agent_string" -m 25 "$final_danmaku_download_url")
+    curl_exit_status=$?
+
+    if [ $curl_exit_status -ne 0 ]; then
+        if [ $curl_exit_status -eq 28 ]; then
+            printf "${error_color}错误: 下载超时 (超过25秒未响应). 服务器繁忙或链接无效.${nc}\n" >&2
+        else
+            printf "${error_color}错误: 下载弹幕内容失败 (curl 错误码: %s).${nc}\n" "$curl_exit_status" >&2
+        fi
+        exit 1
+    fi
+    if [ -z "$json_content" ]; then
+        printf "${error_color}错误: 下载成功但内容为空. 服务器可能未返回有效数据.${nc}\n" >&2
+        exit 1
+    fi
+    printf "${success_color}下载成功!${nc}\n"
+fi
+
+if [ -z "$json_content" ]; then
+    printf "${error_color}错误: 未能获取弹幕内容. 脚本退出.${nc}\n" >&2
+    exit 1
+fi
+
+printf "\n${step_color}步骤 6: 检测格式并进行转换 (使用 jq)${nc}\n"
+format_type="unknown"
+
+if echo "$json_content" | jq -e 'type == "array"' > /dev/null 2>&1; then
+    format_type="new"
+    printf "${info_color}检测到弹幕数据为新格式 (JSON 数组), 开始转换...${nc}\n"
+elif echo "$json_content" | jq -e 'type == "object" and .danmuku and (.danmuku | type == "array")' > /dev/null 2>&1; then
+    format_type="old"
+    printf "${info_color}检测到弹幕数据为旧格式 (JSON 对象,含 danmuku 键), 开始转换...${nc}\n"
+else
+    printf "${error_color}错误: 无法识别下载的弹幕数据结构, 或不是有效的JSON.${nc}\n" >&2
+    printf "${debug_color}调试信息: 获取到的内容前200字符如下:${nc}\n" >&2
+    echo "$json_content" | head -c 200 >&2
+    printf "\n${debug_color}<--- 内容预览结束${nc}\n" >&2
+    exit 1
+fi
+
+{
+    printf "%s\n" '<?xml version="1.0" encoding="utf-8"?>'
+    printf "%s\n" '<i>'
+    printf "  <chatserver>chat.bilibili.com</chatserver>\n"
+    printf "  <chatid>0</chatid>\n"
+    printf "  <mission>0</mission>\n"
+    printf "  <maxlimit>0</maxlimit>\n"
+    printf "  <state>0</state>\n"
+    printf "  <real_name>0</real_name>\n"
+    printf "  <source>k-bilidanmaku</source>\n"
+
+    if [ "$format_type" = "old" ]; then
+        echo "$json_content" | jq -r '
+            .danmuku[] |
+            if type == "array" and length >= 5 then
+                [.[0]|tostring, .[1]|tostring, .[3]|tostring, .[4]|tostring] | @tsv
+            else
+                empty
+            end' | \
+        while IFS=$'\t' read -r p1_ts_raw mode_str_raw font_size_str_raw text_content_raw || [ -n "$text_content_raw" ]; do
+            var_p1_timestamp="$p1_ts_raw"
+
+            var_p2_mode_val="1"
+            case "$mode_str_raw" in
+                "top"|"5") var_p2_mode_val="5";;
+                "bottom"|"4") var_p2_mode_val="4";;
+                "right"|"1") var_p2_mode_val="1";;
+            esac
+
+            var_p3_font_size_val="$font_size_str_raw"
+            var_p3_font_size_val="${var_p3_font_size_val%px}"
+            var_p3_font_size_val="${var_p3_font_size_val%PX}"
+            if ! echo "$var_p3_font_size_val" | grep -qE '^[0-9]+$'; then
+                var_p3_font_size_val="25"
+            fi
+
+            var_p4_color_decimal_val="$color_fixed_decimal"
+            escaped_text=$(xml_escape "$text_content_raw")
+
+            printf "    <d p=\"%s,%s,%s,%s,%s,%s,%s,%s,%s\">%s</d>\n" \
+                "$var_p1_timestamp" "$var_p2_mode_val" "$var_p3_font_size_val" "$var_p4_color_decimal_val" \
+                "$p5_fixed_default" "$p6_fixed_default" "$p7_fixed_default" "$p8_fixed_default" "$p9_fixed_default" \
+                "$escaped_text"
+        done
+
+    elif [ "$format_type" = "new" ]; then
+        echo "$json_content" | jq -r '.[] | select(.text and .p) | "\(.text)\t\(.p)"' | \
+        while IFS=$'\t' read -r text_val params_str || [ -n "$params_str" ]; do
+            read -r p1_ts p2_mode p3_size p5_processed p6 p7 p8 p9 <<-EOF
+            $(echo "$params_str" | awk -F, \
+                -v p5def="$p5_fixed_default" -v p6def="$p6_fixed_default" \
+                -v p7def="$p7_fixed_default" -v p8def="$p8_fixed_default" -v p9def="$p9_fixed_default" '
+                function trim(s) { gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", s); return s; }
+                {
+                    p1 = (NF>=1 && $1!="" ? trim($1) : "0");
+                    mode_json = (NF>=2 && $2!="" ? trim($2) : "1");
+                    p3_json = (NF>=3 && $3!="" ? trim($3) : "25");
+                    p5_json = (NF>=5 ? trim($5) : "");
+                    p6_json = (NF>=6 ? trim($6) : "");
+                    p7_json = (NF>=7 ? trim($7) : "");
+                    p8_json = (NF>=8 ? trim($8) : "");
+                    p9_json = (NF>=9 ? trim($9) : "");
+
+                    p2 = "1";
+                    if (mode_json == "1" || mode_json == "right") p2 = "1";
+                    else if (mode_json == "4" || mode_json == "bottom") p2 = "4";
+                    else if (mode_json == "5" || mode_json == "top") p2 = "5";
+                    else if (mode_json == "0" || mode_json == "2" || mode_json == "scroll") p2 = "1";
+
+                    gsub(/px|PX/, "", p3_json);
+                    if (p3_json !~ /^[0-9]+$/) p3_json = "25";
+
+                    p5_processed_val = p5def;
+                    if (p5_json ~ /^[0-9]+$/ && length(p5_json) >= 10) {
+                        p5_processed_val = int(p5_json / 1000);
+                    }
+                    
+                    p6_processed_val = (p6_json != "" ? p6_json : p6def);
+                    p7_processed_val = (p7_json != "" ? p7_json : p7def);
+                    p8_processed_val = (p8_json != "" ? p8_json : p8def);
+                    p9_processed_val = (p9_json != "" ? p9_json : p9def);
+
+                    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p1, p2, p3_json, p5_processed_val, p6_processed_val, p7_processed_val, p8_processed_val, p9_processed_val;
+                }
+            ')
+            EOF
+
+            p4_color_xml="$color_fixed_decimal"
+            escaped_text=$(xml_escape "$text_val")
+
+            printf "    <d p=\"%s,%s,%s,%s,%s,%s,%s,%s,%s\">%s</d>\n" \
+                "$p1_ts" "$p2_mode" "$p3_size" "$p4_color_xml" \
+                "$p5_processed" "$p6" "$p7" "$p8" "$p9" \
+                "$escaped_text"
+        done
+    fi
+    printf "%s\n" '</i>'
+} > "$output_filename"
+
+printf "\n${step_color}步骤 7: 操作完成${nc}\n"
+if [ $? -eq 0 ] && [ -s "$output_filename" ]; then
+    content_lines=$(grep -c '<d p=' "$output_filename")
+    if [ "$content_lines" -gt 0 ]; then
+        printf "${success_color}转换成功! %s 条弹幕已转换并保存到 %s 文件中.${nc}\n" "$content_lines" "$output_filename"
+    else
+        printf "${warning_color}警告: 转换已执行, 但输出文件 %s 中没有实际的弹幕内容 (未找到 <d p=...> 标签).${nc}\n" "$output_filename"
+    fi
+else
+    printf "${error_color}转换过程中发生错误, 或者输出文件 %s 为空或未创建.${nc}\n" "$output_filename"
+fi
+
+exit 0
