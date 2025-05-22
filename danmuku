@@ -26,12 +26,16 @@ error_color="${c_red}"
 debug_color="${c_magenta}"
 nc="${c_reset}"
 
+prefs_dir="$HOME/.config/danmaku_converter"
+last_dir_file="$prefs_dir/last_basedir.txt"
+history_filename="$prefs_dir/影视列表.txt"
+
 xml_escape() {
     printf "%s" "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&apos;/g'
 }
 
 printf "${title_color}=====================================${nc}\n"
-printf "${title_color}  弹幕格式转换与下载脚本 v7.1 (Termux Optimized) ${nc}\n"
+printf "${title_color}  弹幕格式转换与下载脚本 v7.4 (Termux Optimized)${nc}\n"
 printf "${title_color}=====================================${nc}\n\n"
 
 if ! command -v jq > /dev/null; then
@@ -43,14 +47,35 @@ if ! command -v curl > /dev/null; then
     exit 1
 fi
 
-printf "${step_color}步骤 1: 输入影视总保存文件夹路径${nc}\n"
+mkdir -p "$prefs_dir"
+
+printf "${step_color}步骤 1: 输入或确认影视总保存文件夹路径${nc}\n"
 base_save_dir=""
+last_base_dir_val=""
+if [ -f "$last_dir_file" ]; then
+    last_base_dir_val=$(cat "$last_dir_file")
+fi
+
+prompt_message="请输入影视总文件夹的完整路径"
+if [ -n "$last_base_dir_val" ]; then
+    prompt_message="${prompt_message} (上次: ${last_base_dir_val}, 直接回车使用此路径)"
+fi
+
 while [ -z "$base_save_dir" ]; do
-    printf "${prompt_color}请输入影视总文件夹的完整路径 (例如: /sdcard/MyShows): ${nc}"
+    printf "${prompt_color}%s: ${nc}" "$prompt_message"
     read -r input_base_dir
+
+    if [ -z "$input_base_dir" ] && [ -n "$last_base_dir_val" ]; then
+        input_base_dir="$last_base_dir_val"
+    fi
+
     input_base_dir_expanded=$(eval echo "$input_base_dir")
     if [ -z "$input_base_dir_expanded" ]; then
         printf "${error_color}错误: 路径不能为空.${nc}\n"
+        if [ -n "$last_base_dir_val" ] && [ "$input_base_dir" != "$last_base_dir_val" ]; then
+           last_base_dir_val=""
+           prompt_message="请输入影视总文件夹的完整路径"
+        fi
     else
         base_save_dir="$input_base_dir_expanded"
     fi
@@ -72,9 +97,10 @@ if [ ! -d "$base_save_dir" ]; then
         exit 1
     fi
 fi
+echo "$base_save_dir" > "$last_dir_file"
 printf "${info_color}影视文件将保存在 '%s' 下的对应子文件夹中.${nc}\n\n" "$base_save_dir"
 
-history_filename="影视列表.txt"
+
 printf "${step_color}步骤 2: 选择或输入影视名称${nc}\n"
 show_name=""
 printf "${prompt_color}操作选项:\n"
@@ -257,12 +283,14 @@ if [ -n "$final_danmaku_download_url" ]; then
     printf "${info_color}最终下载链接: %s${nc}\n" "$final_danmaku_download_url"
     printf "${info_color}正在下载 (超时时间 25 秒)...${nc}\n"
     user_agent_string="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    json_content=$(curl -sSLk -A "$user_agent_string" -m 25 "$final_danmaku_download_url")
+    json_content=$(curl --tlsv1.2 -sSLk -A "$user_agent_string" -m 25 "$final_danmaku_download_url")
     curl_exit_status=$?
 
     if [ $curl_exit_status -ne 0 ]; then
         if [ $curl_exit_status -eq 28 ]; then
             printf "${error_color}错误: 下载超时 (超过25秒未响应). 服务器繁忙或链接无效.${nc}\n" >&2
+        elif [ $curl_exit_status -eq 35 ]; then
+             printf "${error_color}错误: 下载弹幕内容失败 (curl 错误码: %s - TLS连接错误). 请尝试在Termux中执行 'pkg update && pkg upgrade' 更新软件包后再试.${nc}\n" "$curl_exit_status" >&2
         else
             printf "${error_color}错误: 下载弹幕内容失败 (curl 错误码: %s).${nc}\n" "$curl_exit_status" >&2
         fi
